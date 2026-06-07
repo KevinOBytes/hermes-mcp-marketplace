@@ -1,52 +1,63 @@
-# Hermes GitHub MCP Marketplace
+# Hermes MCP Marketplace
 
-Browse, search, and install MCP servers from GitHub's MCP Registry and community sources directly into Hermes. Skills-like interactivity with search, filter, and one-click add.
+Browse, search, and install MCP servers from the **official MCP Registry** (`registry.modelcontextprotocol.io`) directly into Hermes.
 
-## What It Does
+## Why This Exists
 
-GitHub's MCP Registry (`github.com/mcp`) is currently a **public preview with no programmatic API** for discovery. This plugin bridges the gap by:
+GitHub's `mcp` organization is a downstream curated view. The **canonical source** is `registry.modelcontextprotocol.io` — backed by Anthropic, GitHub, PulseMCP, and Microsoft. It exposes a real REST API with structured `server.json` metadata including install commands, transports, and environment variables.
 
-1. Scraping/parsing the official `mcp` organization and community repos tagged `mcp-server`
-2. Caching metadata locally (`cache.json`)
-3. Providing interactive tools to search, inspect, and install servers into Hermes's native MCP config
+This plugin uses the official registry as its primary source. No scraping, no GitHub API rate limits.
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `mcp_marketplace_refresh` | Refresh the local cache from GitHub sources |
-| `mcp_marketplace_search` | Search servers by keyword, category, or transport |
-| `mcp_marketplace_list` | List available servers (cached or live) |
-| `mcp_marketplace_info` | Get detailed info + README analysis for a server |
-| `mcp_marketplace_add` | Auto-install a server into Hermes (stdio or http) |
+| `mcp_marketplace_refresh` | Fetch and cache all servers from the official registry |
+| `mcp_marketplace_search` | Search by keyword with optional transport/runtime filters |
+| `mcp_marketplace_list` | Browse cached or live listings |
+| `mcp_marketplace_info` | Deep-dive a server: install commands, env vars, transports |
+| `mcp_marketplace_add` | One-click install into Hermes (auto-detects stdio vs HTTP) |
 
 ## Installation (into Hermes)
 
 ```bash
-# Clone into Hermes plugins directory
-cd ~/.hermes/plugins
-git clone https://github.com/KevinOBytes/hermes-github-mcp-marketplace.git
-
-# Restart Hermes or reload MCP
+cd ~/.hermes/plugins && git clone https://github.com/KevinOBytes/hermes-mcp-marketplace.git
 hermes mcp reload
 ```
 
 ## Requirements
 
-- `GITHUB_TOKEN` env var (PAT) — strongly recommended for rate limits; works without but may hit unauth limits fast.
-- `httpx` — optional but recommended; falls back to urllib if absent.
+- `httpx` — optional but recommended (`pip install httpx`). Falls back gracefully if absent.
+- No API key needed — the official registry is public read.
 
 ## How It Works
 
-- **Discovery:** Queries GitHub API for repos in `github.com/mcp` org + searches `topic:mcp-server` across all of GitHub.
-- **Auto-detection:** Parses READMEs for `docker`, `npx`, `uvx`, `pip`, `go install`, `cargo install` hints to determine how to run the server.
-- **Install:** Uses `hermes mcp add` to register the server with the detected command and environment placeholders.
+1. **Discovery:** Calls `registry.modelcontextprotocol.io/v0/servers` with cursor pagination.
+2. **Normalization:** Flattens `server.json` + `packages[]` into uniform internal records with `install_commands`, `env_vars`, `transports`.
+3. **Auto-install:** For **stdio** servers, builds the command array from `registryType` + `runtimeHint` (npx, uvx, docker, pip, cargo, go). For **HTTP** servers, configures the remote URL and headers.
+4. **Integration:** Uses `hermes mcp add` to register the server natively.
+
+## Example Usage
+
+```
+# Refresh cache
+mcp_marketplace_refresh
+
+# Search for database servers
+mcp_marketplace_search query=postgres
+
+# Get install details
+mcp_marketplace_info id=com.pulsemcp/remote-filesystem
+
+# Install it
+mcp_marketplace_add id=com.pulsemcp/remote-filesystem env={"GCS_BUCKET": "my-bucket"}
+```
 
 ## Limitations
 
-- GitHub MCP Registry has **no official search API** yet — we use repo/topic heuristics.
-- README parsing for install commands is best-effort regex; exotic build steps need manual config.
-- HTTP transport servers require an explicit `url` parameter (auto-filled only for known endpoints like GitHub Copilot MCP).
+- The official registry is in **public preview** — breaking changes possible.
+- Private MCP servers are not supported (registry does not list them).
+- Some exotic build steps may need manual config post-install.
 
 ## License
 

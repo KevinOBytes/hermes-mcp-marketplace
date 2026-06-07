@@ -1,15 +1,15 @@
 # TODO.md
 
 ## Completed
-- [x] Scaffold plugin manifest (`plugin.yaml`)
-- [x] Implement `__init__.py` with 5 marketplace tools
+- [x] Rewrite plugin to use official MCP Registry API (`registry.modelcontextprotocol.io`)
+- [x] Implement `__init__.py` with 5 marketplace tools + registry normalization
 - [x] README + docs
 - [x] Git init + first commit
 
 ## Pending
-- [ ] GitHub repo create + push
-- [ ] Test cache refresh against live GitHub API
-- [ ] Test search/list/info/add workflows end-to-end
+- [ ] GitHub repo rename + push
+- [ ] End-to-end test: refresh, search, info, add workflows
+- [ ] Handle registry schema version drift (`$schema` changes)
 - [ ] Add `mcp_marketplace_remove` tool if needed
-- [ ] Add caching TTL / incremental update logic
-- [ ] Handle pagination for large registry orgs (>100 repos)
+- [ ] Add `mcp_marketplace_update` for version bump checks
+- [ ] Support private registries (custom base URL override)

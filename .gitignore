@@ -22,3 +22,6 @@ venv/
 .env
 .env.local
 .env.production
+
+# Plugin cache
+cache.json

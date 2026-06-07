@@ -1,16 +1,15 @@
 # MEMORY.md
 
-## API Quirks & Decisions
+## API Decisions
 
-- GitHub MCP Registry (`github.com/mcp`) is public preview with no programmatic marketplace API. We use GitHub REST API against the `mcp` org + `topic:mcp-server` search as a polyfill.
-- Unauthenticated GitHub Search API has strict rate limits (~10 req/min). `GITHUB_TOKEN` is optional but practically required.
-- Hermes plugin discovery looks for `plugin.yaml` + `__init__.py` with a `TOOLS` list. No additional registration step needed if files are in `~/.hermes/plugins/<name>/`.
-- `hermes mcp add` CLI syntax varies by transport:
-  - stdio: `hermes mcp add NAME --command 'COMMAND_JSON'`
-  - http: `hermes mcp add NAME --url URL`
-- The `plugin.yaml` `provides_tools` key must list exact tool names from `__init__.py` for Hermes to expose them.
+- Primary source is `registry.modelcontextprotocol.io/v0/servers` — the official MCP Registry REST API backed by Anthropic, GitHub, PulseMCP, Microsoft. This is the canonical metadata repository, not the GitHub `mcp` org (which is a downstream consumer).
+- GitHub `mcp` org scraping was dropped because it lacks structured install metadata. The registry's `server.json` format includes `packages[]` with `registryType`, `runtimeHint`, `runtimeArguments`, `environmentVariables`, and `transport` — everything needed for auto-install.
+- The registry supports cursor pagination (`metadata.nextCursor`). We fetch up to 2000 servers (20 pages x 100) on refresh.
+- No auth required for reads. Registry is public.
+- Deduplication strategy: keyed by `server.name` (namespace). Prefer `isLatest=true` when duplicates exist.
 
 ## Open Questions
 
-- Should we add a `mcp_marketplace_remove` tool to uninstall servers? Hermes CLI already supports `hermes mcp remove NAME`.
-- Should we support `mcp_marketplace_update` to bump cached entries and re-add with new versions?
+- Should we cache package manifests (`server.json` per server) individually for faster info lookups?
+- Should we support `mcp_marketplace_remove` to uninstall servers (Hermes CLI already has `hermes mcp remove`)?
+- Should we add a `mcp_marketplace_update` to re-check registry versions and prompt for upgrades?
