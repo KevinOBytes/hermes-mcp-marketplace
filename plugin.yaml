@@ -1,6 +1,6 @@
 name: hermes-mcp-marketplace
-version: 2.0.0
-description: "Browse, search, and install MCP servers from the official MCP Registry (registry.modelcontextprotocol.io) directly into Hermes."
+version: 2.1.0
+description: "Browse, search, and install MCP servers from the official MCP Registry (registry.modelcontextprotocol.io) directly into Hermes. Includes interactive TUI."
 author: KevinOBytes
 provides_tools:
   - mcp_marketplace_search
@@ -8,3 +8,4 @@ provides_tools:
   - mcp_marketplace_info
   - mcp_marketplace_add
   - mcp_marketplace_refresh
+  - mcp_marketplace_tui

@@ -13,10 +13,11 @@ This plugin uses the official registry as its primary source. No scraping, no Gi
 | Tool | Purpose |
 |------|---------|
 | `mcp_marketplace_refresh` | Fetch and cache all servers from the official registry |
-| `mcp_marketplace_search` | Search by keyword with optional transport/runtime filters |
-| `mcp_marketplace_list` | Browse cached or live listings |
+| `mcp_marketplace_search` | Search by keyword with optional transport/runtime filters (formatted output) |
+| `mcp_marketplace_list` | Browse cached or live listings (paginated summary) |
 | `mcp_marketplace_info` | Deep-dive a server: install commands, env vars, transports |
 | `mcp_marketplace_add` | One-click install into Hermes (auto-detects stdio vs HTTP) |
+| `mcp_marketplace_tui` | Launch interactive terminal browser (keyboard nav, categories, pages, install)
 
 ## Installation (into Hermes)
 

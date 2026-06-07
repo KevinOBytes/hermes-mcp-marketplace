@@ -8,9 +8,10 @@ Browse, search, and install MCP servers from the official MCP Registry
 Tools:
   - mcp_marketplace_refresh    Refresh local cache from registry API
   - mcp_marketplace_search     Search servers by keyword, transport, runtime
-  - mcp_marketplace_list       List cached/available servers
+  - mcp_marketplace_list       List cached/available servers (formatted summary)
   - mcp_marketplace_info       Get detailed info + install config for a server
   - mcp_marketplace_add        Install/add an MCP server into Hermes
+  - mcp_marketplace_tui        Launch interactive terminal browser
 
 No auth required — the official registry is public read.
 """
@@ -20,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -64,26 +66,15 @@ def _fetch_json(url: str, params: Optional[dict] = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Registry helpers
+# Registry normalization
 # ---------------------------------------------------------------------------
 
-def _list_servers(limit: int = 100, cursor: Optional[str] = None, search: Optional[str] = None) -> dict:
-    params: Dict[str, Any] = {"limit": limit}
-    if cursor:
-        params["cursor"] = cursor
-    if search:
-        params["search"] = search
-    return _fetch_json(f"{REGISTRY_BASE}/{API_VERSION}/servers", params=params)
-
-
 def _normalize_server(raw: dict) -> dict:
-    """Flatten registry response into a consistent internal record."""
     server = raw.get("server", {})
     meta = raw.get("_meta", {}).get("io.modelcontextprotocol.registry/official", {})
     name = server.get("name", "")
     display_name = name.split("/")[-1] if "/" in name else name
 
-    # Extract transports from remotes + packages
     transports = set()
     remotes = server.get("remotes", [])
     packages = server.get("packages", [])
@@ -98,7 +89,6 @@ def _normalize_server(raw: dict) -> dict:
             if p.get("runtimeHint"):
                 transports.add(p["runtimeHint"])
 
-    # Extract install commands from packages
     install_commands: List[dict] = []
     for p in packages:
         if not isinstance(p, dict):
@@ -107,7 +97,6 @@ def _normalize_server(raw: dict) -> dict:
         if cmd:
             install_commands.append(cmd)
 
-    # Extract env vars from packages + remotes headers
     env_vars: List[dict] = []
     seen = set()
     for p in packages:
@@ -155,7 +144,6 @@ def _normalize_server(raw: dict) -> dict:
 
 
 def _package_to_command(pkg: dict) -> Optional[dict]:
-    """Convert a registry package into a Hermes stdio command array."""
     registry_type = pkg.get("registryType", "").lower()
     identifier = pkg.get("identifier", "")
     runtime_hint = pkg.get("runtimeHint", "")
@@ -183,7 +171,6 @@ def _package_to_command(pkg: dict) -> Optional[dict]:
     else:
         return None
 
-    # Append runtimeArguments
     for arg in runtime_args:
         v = arg.get("value", "")
         t = arg.get("type", "positional")
@@ -191,6 +178,80 @@ def _package_to_command(pkg: dict) -> Optional[dict]:
             command.append(v)
 
     return {"command": command, "env": env, "registry_type": registry_type, "identifier": identifier}
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers (TUI-friendly text output)
+# ---------------------------------------------------------------------------
+
+def _format_server_summary(s: dict, idx: int) -> str:
+    name = s.get("title") or s.get("name", "???")
+    transports = ", ".join(s.get("transports", [])) or "unknown"
+    desc = (s.get("description") or "No description")[:70]
+    status = "latest" if s.get("is_latest") else "old"
+    return f"{idx:3}. {name:30} [{transports:15}] v{s.get('version','?'):8} ({status}) -- {desc}"
+
+
+def _format_server_detail(s: dict) -> str:
+    lines = []
+    lines.append(f"ID:       {s['id']}")
+    lines.append(f"Name:     {s.get('title') or s.get('name')}")
+    lines.append(f"Version:  {s.get('version', 'N/A')}")
+    lines.append(f"Status:   {'latest' if s.get('is_latest') else 'old version'}")
+    lines.append(f"Transports: {', '.join(s.get('transports', [])) or 'N/A'}")
+    if s.get("url"):
+        lines.append(f"Website:  {s['url']}")
+    if s.get("repository", {}).get("url"):
+        lines.append(f"Repo:     {s['repository']['url']}")
+    lines.append("")
+    lines.append(f"Description: {s.get('description', 'N/A')}")
+
+    if s.get("install_commands"):
+        lines.append("")
+        lines.append("Install Commands:")
+        for cmd in s["install_commands"]:
+            lines.append(f"  $ {' '.join(cmd['command'])}")
+
+    if s.get("env_vars"):
+        lines.append("")
+        lines.append("Environment Variables:")
+        for e in s["env_vars"]:
+            req = "required" if e.get("required") else "optional"
+            sec = " [SECRET]" if e.get("secret") else ""
+            default = f" (default: {e['default']})" if e.get("default") else ""
+            lines.append(f"  {e['name']}: {e.get('description', '')} ({req}){sec}{default}")
+
+    if s.get("remotes"):
+        lines.append("")
+        lines.append("Remote Endpoints:")
+        for r in s["remotes"]:
+            lines.append(f"  [{r.get('type','?')}] {r.get('url','N/A')}")
+
+    return "\n".join(lines)
+
+
+def _format_category_summary(servers: List[dict], top_n: int = 15) -> str:
+    """Compute and format top categories from namespace prefixes."""
+    cats: Dict[str, int] = {}
+    transports: Dict[str, int] = {}
+    for s in servers:
+        ns = s.get("namespace", "")
+        parts = ns.split(".")
+        if len(parts) >= 2:
+            org = parts[1] if parts[0] in ("com", "io", "ai", "app", "dev") else parts[0]
+            cats[org] = cats.get(org, 0) + 1
+        for t in s.get("transports", []):
+            transports[t] = transports.get(t, 0) + 1
+
+    lines = []
+    lines.append("=== Top Organizations ===")
+    for cat, count in sorted(cats.items(), key=lambda x: x[1], reverse=True)[:top_n]:
+        lines.append(f"  {cat:25} {count:4} servers")
+    lines.append("")
+    lines.append("=== Transport Types ===")
+    for t, count in sorted(transports.items(), key=lambda x: x[1], reverse=True):
+        lines.append(f"  {t:25} {count:4} servers")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -234,11 +295,14 @@ def handle_mcp_marketplace_refresh(args: dict, **kw) -> str:
     seen = set()
     cursor: Optional[str] = None
     pages = 0
-    max_pages = 20  # Safety cap (~2000 servers)
+    max_pages = 50
 
     while pages < max_pages:
         pages += 1
-        data = _list_servers(limit=100, cursor=cursor)
+        params: Dict[str, Any] = {"limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        data = _fetch_json(f"{REGISTRY_BASE}/{API_VERSION}/servers", params=params)
         if "error" in data:
             break
         servers = data.get("servers", [])
@@ -247,7 +311,6 @@ def handle_mcp_marketplace_refresh(args: dict, **kw) -> str:
         for s in servers:
             norm = _normalize_server(s)
             sid = norm["id"]
-            # Deduplicate by id, prefer latest version
             if sid in seen:
                 existing = next((x for x in all_servers if x["id"] == sid), None)
                 if existing and norm.get("is_latest"):
@@ -267,11 +330,8 @@ def handle_mcp_marketplace_refresh(args: dict, **kw) -> str:
     }
     _save_cache(cache)
 
-    return json.dumps({
-        "total_servers": len(all_servers),
-        "pages_fetched": pages,
-        "last_updated": cache["last_updated"],
-    }, indent=2)
+    cat_summary = _format_category_summary(all_servers)
+    return f"Refreshed {len(all_servers)} servers from official MCP Registry ({pages} pages).\n\n{cat_summary}"
 
 
 def handle_mcp_marketplace_search(args: dict, **kw) -> str:
@@ -283,14 +343,17 @@ def handle_mcp_marketplace_search(args: dict, **kw) -> str:
 
     # If we have a query, hit the live API for freshness
     if query:
-        data = _list_servers(limit=min(limit, 100), search=query)
+        data = _fetch_json(f"{REGISTRY_BASE}/{API_VERSION}/servers", params={"limit": min(limit, 100), "search": query})
         if "error" not in data:
             servers = [_normalize_server(s) for s in data.get("servers", [])]
             if transport:
                 servers = [s for s in servers if transport in [t.lower() for t in s.get("transports", [])]]
             if runtime:
                 servers = [s for s in servers if any(runtime in (c.get("registry_type", "") + c.get("runtime_hint", "")).lower() for c in s.get("install_commands", []))]
-            return json.dumps(servers, indent=2, default=str)
+            lines = [f"Found {len(servers)} results for '{query}':", ""]
+            for i, s in enumerate(servers[:limit], 1):
+                lines.append(_format_server_summary(s, i))
+            return "\n".join(lines)
 
     # Fallback to cache
     cache = _load_cache()
@@ -314,30 +377,34 @@ def handle_mcp_marketplace_search(args: dict, **kw) -> str:
         if runtime and any(runtime in (c.get("registry_type", "") + c.get("runtime_hint", "")).lower() for c in s.get("install_commands", [])):
             score += 5
         if not query and not transport and not runtime:
-            score = 1  # include everything when no filters
+            score = 1
         if score > 0:
             results.append({**s, "_score": score})
 
     results.sort(key=lambda x: x["_score"], reverse=True)
     results = results[:limit]
-    for r in results:
-        r.pop("_score", None)
-    return json.dumps(results, indent=2, default=str)
+    lines = [f"Found {len(results)} results for '{query}':", ""]
+    for i, s in enumerate(results, 1):
+        lines.append(_format_server_summary(s, i))
+    return "\n".join(lines)
 
 
 def handle_mcp_marketplace_list(args: dict, **kw) -> str:
-    """List available MCP servers from cache or live registry."""
-    source = args.get("source", "cached")  # cached | live
+    """List available MCP servers from cache or live registry (formatted)."""
+    source = args.get("source", "cached")
     limit = args.get("limit", 30)
     transport = args.get("transport", "").strip().lower()
 
     if source == "live":
-        data = _list_servers(limit=min(limit, 100))
+        data = _fetch_json(f"{REGISTRY_BASE}/{API_VERSION}/servers", params={"limit": min(limit, 100)})
         if "error" not in data:
             servers = [_normalize_server(s) for s in data.get("servers", [])]
             if transport:
                 servers = [s for s in servers if transport in [t.lower() for t in s.get("transports", [])]]
-            return json.dumps(servers, indent=2, default=str)
+            lines = [f"Live listing — {len(servers)} servers:", ""]
+            for i, s in enumerate(servers, 1):
+                lines.append(_format_server_summary(s, i))
+            return "\n".join(lines)
 
     cache = _load_cache()
     servers = cache.get("servers", [])
@@ -350,56 +417,73 @@ def handle_mcp_marketplace_list(args: dict, **kw) -> str:
         servers = [s for s in servers if transport in [t.lower() for t in s.get("transports", [])]]
 
     servers = sorted(servers, key=lambda x: x.get("updated_at", "") or "", reverse=True)[:limit]
-    return json.dumps(servers, indent=2, default=str)
+    lines = [f"Cached listing — {len(servers)} servers (last updated: {cache.get('last_updated', 'unknown')}):", ""]
+    for i, s in enumerate(servers, 1):
+        lines.append(_format_server_summary(s, i))
+
+    # Add pagination hint
+    total = len(cache.get("servers", []))
+    lines.append("")
+    lines.append(f"Showing {len(servers)}/{total} total cached servers. Use 'source=live' for fresh data.")
+    return "\n".join(lines)
 
 
 def handle_mcp_marketplace_info(args: dict, **kw) -> str:
     """Get detailed info about a specific MCP server by namespace ID."""
     server_id = args.get("id", "").strip()
     if not server_id:
-        return json.dumps({"error": "Provide 'id' in namespace format (e.g., 'com.pulsemcp/remote-filesystem')."})
+        return "ERROR: Provide 'id' in namespace format (e.g., 'com.pulsemcp/remote-filesystem')."
 
     # Try live lookup via search first
-    data = _list_servers(limit=10, search=server_id.split("/")[-1])
+    data = _fetch_json(f"{REGISTRY_BASE}/{API_VERSION}/servers", params={"limit": 10, "search": server_id.split("/")[-1]})
     if "error" not in data:
         for s in data.get("servers", []):
             if s.get("server", {}).get("name") == server_id:
-                return json.dumps(_normalize_server(s), indent=2, default=str)
+                return _format_server_detail(_normalize_server(s))
 
     # Fallback to cache exact match
     cache = _load_cache()
     for s in cache.get("servers", []):
         if s.get("id") == server_id:
-            return json.dumps(s, indent=2, default=str)
+            return _format_server_detail(s)
 
-    return json.dumps({"error": f"Server '{server_id}' not found in registry or cache."})
+    return f"ERROR: Server '{server_id}' not found in registry or cache."
 
 
 def handle_mcp_marketplace_add(args: dict, **kw) -> str:
     """Install/add an MCP server into Hermes from the marketplace."""
     server_id = args.get("id", "").strip()
-    name = args.get("name", "").strip()  # Hermes MCP server name
-    transport = args.get("transport", "").strip().lower()  # stdio | http | sse | streamable-http
-    env = args.get("env", {})  # Optional override env vars
+    name = args.get("name", "").strip()
+    transport = args.get("transport", "").strip().lower()
+    env = args.get("env", {})
 
     if not server_id:
-        return json.dumps({"error": "Provide 'id' in namespace format (e.g., 'com.pulsemcp/remote-filesystem')."})
+        return "ERROR: Provide 'id' in namespace format (e.g., 'com.pulsemcp/remote-filesystem')."
 
     if not name:
         name = server_id.replace("/", "_").replace(".", "_")
 
-    # Resolve server info
-    info_json = handle_mcp_marketplace_info({"id": server_id}, **kw)
-    info = json.loads(info_json)
-    if "error" in info:
-        return json.dumps({"error": f"Could not resolve server: {info['error']}"})
+    info_text = handle_mcp_marketplace_info({"id": server_id}, **kw)
+    if info_text.startswith("ERROR"):
+        return info_text
+
+    # Parse the text format back into structured data for install logic
+    # We re-fetch from cache since text format is hard to parse
+    cache = _load_cache()
+    info = None
+    for s in cache.get("servers", []):
+        if s.get("id") == server_id:
+            info = s
+            break
+
+    if not info:
+        return f"ERROR: Could not find structured data for '{server_id}' in cache."
 
     transports = [t.lower() for t in info.get("transports", [])]
     remotes = info.get("remotes", [])
     packages = info.get("packages", [])
     install_commands = info.get("install_commands", [])
 
-    # Determine target transport
     if not transport:
         if "stdio" in transports or "sse" in transports:
             transport = "stdio"
@@ -412,7 +496,6 @@ def handle_mcp_marketplace_add(args: dict, **kw) -> str:
         else:
             transport = "stdio"
 
-    # HTTP transport: use remotes
     if transport in ("http", "sse", "streamable-http"):
         remote = None
         for r in remotes:
@@ -421,57 +504,51 @@ def handle_mcp_marketplace_add(args: dict, **kw) -> str:
                 break
         if not remote and remotes:
             remote = remotes[0]
-
         if not remote:
-            return json.dumps({"error": f"No remote endpoint found for transport '{transport}'.", "server": info})
+            return f"ERROR: No remote endpoint found for transport '{transport}'."
 
         url = remote.get("url", "")
         headers = {}
         for h in remote.get("headers", []):
             headers[h["name"]] = h.get("value", "")
-        # Merge env overrides
         merged_env = {e["name"]: env.get(e["name"], "") for e in info.get("env_vars", [])}
         for k, v in env.items():
             merged_env[k] = v
 
         result = _hermes_mcp_add_http(name, url, headers, merged_env)
-        return json.dumps({
-            "success": result.get("returncode", 1) == 0,
-            "name": name,
-            "transport": transport,
-            "url": url,
-            "headers": headers,
-            "env": merged_env,
-            "cli_stdout": result.get("stdout"),
-            "cli_stderr": result.get("stderr"),
-            "returncode": result.get("returncode"),
-        }, indent=2)
+        success = result.get("returncode", 1) == 0
+        msg = f"{'SUCCESS' if success else 'FAILED'}: HTTP install '{name}'\nURL: {url}\nHeaders: {headers}\nEnv: {merged_env}"
+        if not success:
+            msg += f"\nCLI stderr: {result.get('stderr', '')}"
+        return msg
+    else:
+        if not install_commands:
+            return f"ERROR: No installable stdio package found for '{server_id}'.\nTransports: {transports}\nPackages: {packages}"
 
-    # STDIO transport: use install commands from packages
-    if not install_commands:
-        return json.dumps({
-            "error": f"No installable stdio package found for '{server_id}'.",
-            "transports": transports,
-            "packages": packages,
-        })
+        cmd_info = install_commands[0]
+        command = cmd_info.get("command", [])
+        merged_env = {k: env.get(k, v) for k, v in cmd_info.get("env", {}).items()}
+        for k, v in env.items():
+            merged_env[k] = v
 
-    cmd_info = install_commands[0]
-    command = cmd_info.get("command", [])
-    merged_env = {k: env.get(k, v) for k, v in cmd_info.get("env", {}).items()}
-    for k, v in env.items():
-        merged_env[k] = v
+        result = _hermes_mcp_add_stdio(name, command, merged_env)
+        success = result.get("returncode", 1) == 0
+        msg = f"{'SUCCESS' if success else 'FAILED'}: stdio install '{name}'\nCommand: {' '.join(command)}\nEnv: {merged_env}"
+        if not success:
+            msg += f"\nCLI stderr: {result.get('stderr', '')}"
+        return msg
 
-    result = _hermes_mcp_add_stdio(name, command, merged_env)
-    return json.dumps({
-        "success": result.get("returncode", 1) == 0,
-        "name": name,
-        "transport": "stdio",
-        "command": command,
-        "env": merged_env,
-        "cli_stdout": result.get("stdout"),
-        "cli_stderr": result.get("stderr"),
-        "returncode": result.get("returncode"),
-    }, indent=2)
+
+def handle_mcp_marketplace_tui(args: dict, **kw) -> str:
+    """Launch the interactive terminal UI browser."""
+    script_path = Path(__file__).parent / "scripts" / "marketplace_tui.py"
+    if not script_path.exists():
+        return f"ERROR: TUI script not found at {script_path}"
+    try:
+        result = subprocess.run([sys.executable, str(script_path)], timeout=300)
+        return f"TUI exited with code {result.returncode}."
+    except Exception as e:
+        return f"ERROR launching TUI: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +560,7 @@ TOOLS = [
         "name": "mcp_marketplace_refresh",
         "schema": {
             "name": "mcp_marketplace_refresh",
-            "description": "Refresh the local cache of MCP servers from the official MCP Registry API (registry.modelcontextprotocol.io). Fetches all pages.",
+            "description": "Refresh the local cache of MCP servers from the official MCP Registry API. Fetches all pages and shows category summary.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -501,7 +578,7 @@ TOOLS = [
             "description": (
                 "Search the official MCP Registry for servers by keyword. "
                 "Can also filter by transport type (stdio, http, sse, streamable-http) or runtime (npm, docker, uvx). "
-                "Queries the live API for freshness."
+                "Returns a formatted summary list, not raw JSON."
             ),
             "parameters": {
                 "type": "object",
@@ -538,7 +615,7 @@ TOOLS = [
             "name": "mcp_marketplace_list",
             "description": (
                 "List available MCP servers from the local cache or live registry. "
-                "Can filter by transport type."
+                "Returns a formatted paginated summary with indexes, not raw JSON."
             ),
             "parameters": {
                 "type": "object",
@@ -562,7 +639,7 @@ TOOLS = [
             },
         },
         "handler": handle_mcp_marketplace_list,
-        "description": "List available MCP servers",
+        "description": "List available MCP servers (formatted)",
         "emoji": "📋",
     },
     {
@@ -571,7 +648,8 @@ TOOLS = [
             "name": "mcp_marketplace_info",
             "description": (
                 "Get detailed information about a specific MCP server from the official registry. "
-                "Includes install commands, required environment variables, and transport options."
+                "Includes install commands, required environment variables, and transport options. "
+                "Returns formatted text, not raw JSON."
             ),
             "parameters": {
                 "type": "object",
@@ -625,5 +703,24 @@ TOOLS = [
         "handler": handle_mcp_marketplace_add,
         "description": "Install an MCP server into Hermes from the official registry",
         "emoji": "➕",
+    },
+    {
+        "name": "mcp_marketplace_tui",
+        "schema": {
+            "name": "mcp_marketplace_tui",
+            "description": (
+                "Launch the interactive terminal UI (TUI) browser for the MCP marketplace. "
+                "Provides keyboard navigation (j/k arrows), pagination, category filtering, search, "
+                "server detail view, and one-click install. Requires 'rich' to be installed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        "handler": handle_mcp_marketplace_tui,
+        "description": "Launch interactive TUI browser for MCP marketplace",
+        "emoji": "🖥️",
     },
 ]
