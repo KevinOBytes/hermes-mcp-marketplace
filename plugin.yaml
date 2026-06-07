@@ -1,0 +1,12 @@
+name: hermes-github-mcp-marketplace
+version: 1.0.0
+description: "Browse, search, and install MCP servers from GitHub's MCP Registry and community sources directly into Hermes. Skills-like interactivity with search, filter, one-click add."
+author: KevinOBytes
+requires_env:
+  - GITHUB_TOKEN
+provides_tools:
+  - mcp_marketplace_search
+  - mcp_marketplace_list
+  - mcp_marketplace_info
+  - mcp_marketplace_add
+  - mcp_marketplace_refresh
